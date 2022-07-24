@@ -1,0 +1,29 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+require 'json'
+
+boxes = JSON.parse(File.read(File.join(File.dirname(__FILE__), 'boxes.json')))
+
+Vagrant.configure("2") do |config|
+  boxes.each do |box|
+    config.vm.box = box['box']
+
+    config.vm.network "private_network", ip: box['ip']
+
+    config.vm.provider "virtualbox" do |vb|
+        # Display the VirtualBox GUI when booting the machine
+        vb.gui = false
+        # Customize the amount of memory on the VM:
+        vb.memory = box['memory']
+        vb.cpus = box['cpus']
+        # make it usable from WSL:
+        vb.customize [ "modifyvm", :id, "--uartmode1", "disconnected" ]
+    end
+
+    config.vm.provision "ansible" do |ansible|
+      ansible.playbook = box['playbook']
+      #ansible.verbose = "vvvv"
+    end
+  end
+end

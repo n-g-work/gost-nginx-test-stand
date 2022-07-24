@@ -1,0 +1,48 @@
+version: '2.4'
+
+services:
+
+  mid:
+    image: localhost:5000/gost-nginx:v1
+    container_name: nginx-mid
+    volumes:
+      - /vagrant/nginx/mid/config/nginx.conf:/etc/nginx/nginx.conf
+      - /vagrant/nginx/mid/config/nspk_gate.conf:/etc/nginx/nspk_gate.conf
+      - /vagrant/nginx/mid/cert:/etc/nginx/ssl
+      - /vagrant/nginx/mid/html:/var/www/html
+      - /vagrant/nginx/mid/logs:/etc/nginx/logs
+    ports:
+      - "8080-8100:8080-8100"
+    restart: unless-stopped
+    networks:
+      - nginx-gost-network
+
+  target:
+    image: localhost:5000/gost-nginx:v1
+    container_name: nginx-target
+    volumes:
+      - /vagrant/nginx/target/config/nginx.conf:/etc/nginx/nginx.conf
+      - /vagrant/nginx/target/config/nspk_gate.conf:/etc/nginx/nspk_gate.conf
+      - /vagrant/nginx/target/cert:/etc/nginx/ssl
+      - /vagrant/nginx/target/html:/var/www/html
+      - /vagrant/nginx/target/logs:/etc/nginx/logs
+    ports:
+      - "80:80"
+      - "443:443"
+      - "1443:1443"
+      - "2443:2443"
+      - "3443:3443"
+      - "4443:4443"
+      - "5443:5443"
+    restart: unless-stopped
+    networks:
+      - nginx-gost-network
+
+  tools:
+    image: localhost:5000/gost-tools:v1
+    command: sh -c 'while sleep 3600; do :; done'
+    networks:
+      - nginx-gost-network
+
+networks:
+  nginx-gost-network:

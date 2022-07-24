@@ -1,0 +1,11 @@
+[
+    {
+        "name": "test-stand",
+        "description":"vm to create docker images and publish them, then pull them and run",
+        "box": "https://cloud-images.ubuntu.com/bionic/current/bionic-server-cloudimg-amd64-vagrant.box",
+        "playbook": "ansible/playbook.yml",
+        "memory": 2048,
+        "cpus": 4,
+        "ip":"192.168.56.56"
+    }
+]

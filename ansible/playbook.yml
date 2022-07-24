@@ -1,0 +1,263 @@
+---
+- hosts: default
+  become: true
+  pre_tasks:
+    - name: Update repositories cache
+      apt:
+        update_cache: yes
+
+  roles:
+    - geerlingguy.docker
+
+  tasks:
+    - name: install python dependencies
+      become: true
+      apt:
+        update_cache: yes
+        state: latest
+        name: python3-pip
+
+    - name: install 'Docker SDK for Python'
+      #become: true  # WILL STOP WORKING IF UNCOMMENTED
+      pip:
+        name: docker
+
+    - name: add vagrant user to docker group
+      user:
+        name: vagrant
+        append: yes
+        groups: docker
+      become: true
+
+    # - name: "run registry container"
+    #   docker_container:
+    #     name: registry
+    #     state: started
+    #     restart_policy: unless-stopped
+    #     image: registry:2.8.1
+    #     pull: true
+    #     ports:
+    #       - "5000:5000"
+
+###################################
+######### BUILDING IMAGES #########
+###################################
+
+    - name: build gost-tools
+      docker_image:
+        build:
+          path: "/vagrant/docker/tools"
+          pull: no
+        name: localhost:5000/gost-tools
+        tag: v1
+        #push: yes
+        source: build
+
+    - name: build gost-nginx
+      docker_image:
+        build:
+          path: "/vagrant/docker/nginx"
+          pull: no
+        name: localhost:5000/gost-nginx
+        tag: v1
+        #push: yes
+        source: build
+
+    # - name: apply docker-compose
+    #   docker_compose:
+    #     project_src: /vagrant/docker
+
+    - name: create docker network
+      docker_network:
+        name: gost-network
+        state: present
+
+    # - name: run gost-tools container
+    #   docker_container:
+    #     name: gost-tools
+    #     state: started
+    #     command: sh -c 'while sleep 3600; do :; done'
+    #     restart_policy: unless-stopped
+    #     image: localhost:5000/gost-tools:v1
+    #     #pull: true
+    #     networks: 
+    #       - name: gost-network
+
+    # - name: add container to inventory
+    #   add_host:
+    #     name: gost-tools
+    #     ansible_connection: docker
+    #   changed_when: false
+
+####################################
+########### CERTIFICATES ###########
+####################################
+
+    - name: remove all previous files if there are any
+      command: /bin/rm -rf /vagrant/nginx/ssl/generated/*
+
+    - name: create folders
+      file:
+        path: "{{item.path}}"
+        state: directory
+      with_items: 
+        - path: /vagrant/nginx/ssl/generated/ca+mid
+        - path: /vagrant/nginx/ssl/generated/ca+mid+client
+        - path: /vagrant/nginx/ssl/generated/mid+client
+
+    - name: generate certificates
+      command: "{{ item.cmd }}"
+      with_items: 
+
+        - desc: generate CA key and csr
+          cmd: 
+            docker run --rm -v /vagrant/nginx/ssl:/ssl localhost:5000/gost-tools:v1 sh -c 
+            'openssl req -newkey gost2012_512 -pkeyopt paramset:A -passout pass:password 
+            -subj /C=RU/ST=Moscow/O=Org/OU=IT/CN=GOSTCA -keyout /ssl/generated/ca.key -out /ssl/generated/ca.csr'
+        - desc: complete the CA csr and produce CA certificate
+          cmd: 
+            docker run --rm -v /vagrant/nginx/ssl:/ssl localhost:5000/gost-tools:v1 sh -c 
+            'openssl x509 -req -days 36500 -passin pass:password 
+            -in /ssl/generated/ca.csr -signkey /ssl/generated/ca.key -out /ssl/generated/ca.crt'
+
+        - desc: generate INTERMEDIATE CA key and csr
+          cmd: 
+            docker run --rm -v /vagrant/nginx/ssl:/ssl localhost:5000/gost-tools:v1 sh -c 
+            'openssl req -newkey gost2012_512 -pkeyopt paramset:A -passout pass:password 
+            -subj "/C=RU/ST=Moscow/O=Org/OU=IT/CN=GOSTCA-MID" -keyout /ssl/generated/mid.key -out /ssl/generated/mid.csr' 
+        - desc: complete the INTERMEDIATE CA csr and produce INTERMEDIATE CA certificate
+          cmd: 
+            docker run --rm -v /vagrant/nginx/ssl:/ssl localhost:5000/gost-tools:v1 sh -c 
+            'openssl x509 -engine gost -req -in /ssl/generated/mid.csr -passin pass:password 
+            -CA /ssl/generated/ca.crt -CAkey /ssl/generated/ca.key -CAcreateserial -out /ssl/generated/mid.crt -days 36500 -extensions v3_intermediate_ca'
+
+        - desc: generate TARGET key and csr
+          cmd: 
+            docker run --rm -v /vagrant/nginx/ssl:/ssl localhost:5000/gost-tools:v1 sh -c 
+            'openssl req -newkey gost2012_512 -pkeyopt paramset:A -passout pass:password 
+            -subj "/C=RU/ST=Moscow/O=Org/OU=IT/CN=GOST-TARGET" -keyout /ssl/generated/target.key -out /ssl/generated/target.csr' 
+        - desc: complete the TARGET csr and produce TARGET certificate
+          cmd: 
+            docker run --rm -v /vagrant/nginx/ssl:/ssl localhost:5000/gost-tools:v1 sh -c 
+            'openssl x509 -engine gost -req -in /ssl/generated/target.csr -passin pass:password 
+            -CA /ssl/generated/mid.crt -CAkey /ssl/generated/mid.key -CAcreateserial -out /ssl/generated/target.crt -days 36500'
+
+        - desc: generate CLIENT key and csr
+          cmd: 
+            docker run --rm -v /vagrant/nginx/ssl:/ssl localhost:5000/gost-tools:v1 sh -c 
+            'openssl req -newkey gost2012_512 -pkeyopt paramset:A -passout pass:password 
+            -subj "/C=RU/ST=Moscow/O=Org/OU=IT/CN=GOST-CLIENT" -keyout /ssl/generated/client.key -out /ssl/generated/client.csr' 
+        - desc: complete the CLIENT csr and produce CLIENT certificate
+          cmd: 
+            docker run --rm -v /vagrant/nginx/ssl:/ssl localhost:5000/gost-tools:v1 sh -c 
+            'openssl x509 -engine gost -req -in /ssl/generated/client.csr -passin pass:password 
+            -CA /ssl/generated/mid.crt -CAkey /ssl/generated/mid.key -CAcreateserial -out /ssl/generated/client.crt -days 36500'
+
+    # - name: combine certificates
+    #   command: "{{item.cmd}}"
+    #   with_items: 
+    #     - cmd: /bin/cat /vagrant/nginx/ssl/generated/ca.crt /vagrant/nginx/ssl/generated/mid.crt > /vagrant/nginx/ssl/generated/ca+mid.crt
+    #     - cmd: /bin/cat /vagrant/nginx/ssl/generated/ca.crt /vagrant/nginx/ssl/generated/mid.crt /vagrant/nginx/ssl/generated/client.crt > /vagrant/nginx/ssl/generated/ca+mid+client.crt
+    #     - cmd: /bin/cat /vagrant/nginx/ssl/generated/mid.crt /vagrant/nginx/ssl/generated/client.crt > /vagrant/nginx/ssl/generated/mid+client.crt
+
+    - name: copy certificates for combining
+      copy:
+        src: "{{item.src}}"
+        dest: "{{item.dest}}"
+        remote_src: yes
+      with_items: 
+        - src: /vagrant/nginx/ssl/generated/ca.crt
+          dest: /vagrant/nginx/ssl/generated/ca+mid/ca.crt
+        - src: /vagrant/nginx/ssl/generated/mid.crt
+          dest: /vagrant/nginx/ssl/generated/ca+mid/mid.crt
+
+        - src: /vagrant/nginx/ssl/generated/ca.crt
+          dest: /vagrant/nginx/ssl/generated/ca+mid+client/ca.crt
+        - src: /vagrant/nginx/ssl/generated/mid.crt
+          dest: /vagrant/nginx/ssl/generated/ca+mid+client/mid.crt
+        - src: /vagrant/nginx/ssl/generated/client.crt
+          dest: /vagrant/nginx/ssl/generated/ca+mid+client/client.crt
+
+        - src: /vagrant/nginx/ssl/generated/mid.crt
+          dest: /vagrant/nginx/ssl/generated/mid+client/mid.crt
+        - src: /vagrant/nginx/ssl/generated/client.crt
+          dest: /vagrant/nginx/ssl/generated/mid+client/client.crt
+        
+        - src: /vagrant/nginx/ssl/password
+          dest: /vagrant/nginx/ssl/generated/password
+
+    - name: combine CA and INTERMEDIATE CA certificates into ca+mid.crt
+      assemble: 
+        src: /vagrant/nginx/ssl/generated/ca+mid
+        dest: /vagrant/nginx/ssl/generated/ca+mid.crt
+
+    - name: combine INTERMEDIATE CA and CLIENT certificates into mid+client.crt
+      assemble: 
+        src: /vagrant/nginx/ssl/generated/ca+mid+client
+        dest: /vagrant/nginx/ssl/generated/ca+mid+client.crt
+
+    - name: combine CA + INTERMEDIATE CA and CLIENT certificates into ca+mid+client.crt
+      assemble: 
+        src: /vagrant/nginx/ssl/generated/mid+client
+        dest: /vagrant/nginx/ssl/generated/mid+client.crt
+
+####################################
+############ CONTAINERS ############
+####################################
+
+    - name: remove containers
+      docker_container:
+        name: "{{item.name}}"
+        state: absent
+      with_items: 
+        - name: nginx-target
+        - name: nginx-mid
+
+    - name: run nginx-target container
+      docker_container:
+        name: nginx-target
+        state: started
+        restart_policy: unless-stopped
+        image: localhost:5000/gost-nginx:v1
+        #pull: true
+        ports:
+          - "80:80"
+          - "443:443"
+          - "1443:1443"
+          - "2443:2443"
+          - "3443:3443"
+          - "4443:4443"
+          - "5443:5443"
+        networks: 
+          - name: gost-network
+        volumes:
+          - /vagrant/nginx/target/config/nginx.conf:/etc/nginx/nginx.conf
+          - /vagrant/nginx/target/config/default.conf:/etc/nginx/conf.d/default.conf
+          - /vagrant/nginx/target/html:/var/www/html
+          - /vagrant/nginx/target/logs:/etc/nginx/logs
+          - /vagrant/nginx/ssl/generated:/etc/nginx/ssl
+
+    - name: run nginx-mid container
+      docker_container:
+        name: nginx-mid
+        state: started
+        restart_policy: unless-stopped
+        image: localhost:5000/gost-nginx:v1
+        #pull: true
+        ports:
+          - "8080-8100:8080-8100"
+        networks: 
+          - name: gost-network
+        volumes:
+          - /vagrant/nginx/mid/config/nginx.conf:/etc/nginx/nginx.conf
+          - /vagrant/nginx/mid/config/default.conf:/etc/nginx/conf.d/default.conf
+          - /vagrant/nginx/mid/html:/var/www/html
+          - /vagrant/nginx/mid/logs:/etc/nginx/logs
+          - /vagrant/nginx/ssl/generated:/etc/nginx/ssl
+
+###################################
+########## RUNNING TESTS ##########
+###################################
+
+    - name: run tests
+      command: /bin/bash /vagrant/scripts/tests.sh
